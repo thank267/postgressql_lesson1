@@ -1,0 +1,32 @@
+version: '3.5'
+
+services:
+  postgres:
+    container_name: postgres_otus_container
+    image: postgres:15.6
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      PGDATA: /data/postgres
+      TZ: "Europe/Moscow"
+      PGTZ: "Europe/Moscow"
+    volumes:
+       - otus_db_data:/data/postgres
+
+    ports:
+      - "5432:5432"
+    networks:
+      - postgres
+    restart: unless-stopped
+
+networks:
+  postgres:
+    driver: bridge
+
+volumes:
+  otus_db_data:
+    driver: local
+    driver_opts:
+      type: none
+      device: //c/var/lib/postgres
+      o: bind
