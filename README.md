@@ -1,62 +1,145 @@
-# Установка и настройка Postgresql
+# Работа с базами данных, пользователями и правами
 
-Т.к. работаю в докере для windows пришлось сразу создать внешний диск и приаттачить его создаваемому образу с помощью команд:
-```
-1) docker pull ubuntu:22.04
-2) docker volume create --driver local --opt type=none --opt device=c:/var/lib/postgres2 --opt o=bind disk2
-   disk2
-3) docker run --name otus --mount source=disk2,target=/opt/disk2 -it ubuntu:22.04
-```
+1) Для установки использовал docker-compose файл:
+   [docker-compose файл](/docker_compose_files/postgresql-14-otus-docker-compose.yml)
 
-Далее на чистую ubuntu 22.04 ставлю Postgresql 15.6:
+2) Коннекчусь к кластеру 
 ```
-4) apt update
-5) apt upgrade
-6) apt install -y postgresql-common
-7) apt install gnupg
-8) apt install gnupg2
-9) apt install gnupg1
-10) /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh
-11) apt update
-12) apt -y install postgresql-15
+psql -U postgres
 ```
+3) Создаю базу testdb
+```
+CREATE DATABASE testdb;
+\c testdb;
+```
+4) Коннекчусь к ней
+```
+\c testdb;
+```
+5) Создаю схему testnm
+```
+CREATE SCHEMA testnm;
+```
+6) Создаю таблицу t1. Т.к. я привык работать со схемами и не видел "шпаргалки", то сразу создал таблицу с префиксом
+```
+CREATE TABLE testnm.t1( c1 INT);
+```
+7) Заполняю таблицу тестовыми данными
+```
+INSERT INTO testnm.t1 (c1) VALUES (1);
+```
+8) Создаю роль readonly
+```
+CREATE ROLE readonly;
+```
+9) Даю право на логин
+```
+ALTER ROLE "readonly" WITH LOGIN;
+```
+10) Даю право на использование схемы testnm
+```
+GRAND USAGE ON SCHEMA testnm TO "readonly";
+```
+11) Даю право на SELECT всех таблиц в testnm
+```
+GRANT SELECT ON ALL TABLES IN SCHEMA testnm TO "readonly";
+```
+12) Создаю пользователя testread с паролем test123
+```
+create user testread with encrypted password 'test123';
+```
+13) Маплю пользователя и роль
+```
+GRANT readonly TO testread;
+```
+14) Захожу под новым пользователем в базу
+```
+\c testdb testread
+```
+15) Запрашиваю данные из созданной таблицы
+```
+select * from testnm.t1;
+```
+16-21. Т.к. создавал таблицу с префиксом у меня все завелось
+22) возвращаюсь в кластер под пользователем postgres
+```
+\c testdb postgres
+```
+23) удаляю таблицу
+```
+DROP TABLE testnm.t1;
+```
+24) Повторно создаю таблицу с указанием схемы
+```
+CREATE TABLE testnm.t1( c1 INT);
+```
+25) Заполняю данными
+```
+INSERT INTO testnm.t1 (c1) VALUES (1);
+```
+26) Захожу под пользователем testread
+```
+\c testdb testread
+```
+27) Читаю данные
+```
+select * from testnm.t1; 
+```
+28) Получаю ошибку
+```
+ERROR:  permission denied for table t1; 
+```
+29) Хоть раздавали права на все таблицы, новой таблицы (шаг 24) когда раздавали права (шаг 11) тогда не существовало.
+30) Добавляем привилегии по умолчанию под пользователем postgres
+```
+\c testdb postgres
+ALTER default privileges in SCHEMA testnm grant SELECT on TABLES to readonly;
+\c testdb testread
+```
+31) Читаем данные
+```
+select * from testnm.t1; 
+```
+32) Получаем ту же ошибку потому что до выполнения команды с раздачей привилегий (шаг 30) таблица существовала (шаг 24)
+```
+ERROR:  permission denied for table t1; 
+```
+33) Исправляем - переконнекчиваюсь под postgres и делаю 
+```
+\c testdb postgres
+GRANT SELECT ON ALL TABLES IN SCHEMA testnm TO "readonly";
+```
+Можно проверить
+```
+SELECT * FROM information_schema.role_table_grants WHERE grantee = 'readonly';) 
+```
+34) Выбираю данные 
+```
+select * from testnm.t1; 
+```
+35-36. Ура получилось
+![ура!](/images/homework4/allright.png "ура!")
 
-Установили, смотрим результат
-![контейнер Ubuntu 22.04 c postgresql 15.6](/images/homework3/install.png "контейнер Ubuntu 22.04 c postgresql 15.6")
+37) Пробуем с новой таблицей
+```
+create table t2(c1 integer);
+insert into t2 values (2);
+```
+38) Все получилось. Т.к. схема не указана и мы создали t2 в public
 
-Запускаем PG и создаем тестовую таблицу
+39-40. Забываем про public и меняем search path
 ```
-13) /etc/init.d/postgresql start
-14) sudo -u postgres pg_lsclusters
+\c testdb postgres;
+REVOKE CREATE on SCHEMA public FROM public;
+REVOKE ALL on DATABASE testdb FROM public;
+GRANT CONNECT ON DATABASE testdb TO readonly;
+ALTER USER 'testread' set SEARCH_PATH = 'testnm';
+\c testdb testread;
 ```
-![Кластер запущен](/images/homework3/clusterUp.png "Кластер запущен")
+41) делаем новую таблицу t3 и заполняем данными
 ```
-16) sudo -u postgres psql
-17) create table test(c1 text);
-18) insert into test values('1');
-19) \q
+create table t3(c1 integer);
+insert into t2 values (2);
 ```
-
-Останавливаем кластер и переносим директорию на внешний диск
-```
-21) sudo -u postgres pg_ctlcluster 15 main stop
-22) chown -R postgres:postgres /opt/disk2
-23) mv /var/lib/postgresql/15 /opt/disk2
-```
-![Внешний диск](/images/homework3/external_disk.png "Внешний диск")
-![Примонтированный диск](/images/homework3/mounted_disk.png "Примонтированный диск")
-
-Повторный запуск кластера Postgresql вызывает естественную ошибку
-```
-24) sudo -u postgres pg_ctlcluster 15 main start 
-25) Error: /var/lib/postgresql/15/main is not accessible or does not exist
-```
-
-Для исправления ситуации правим файл /etc/postgresql/15/main/postgresql.conf
-```
-26) data_directory = '/opt/disk2/15/main'
-27) /etc/init.d/postgresql start
-28) select * from test;
-```
-
-![Все взлетело](/images/homework3/finish.png "Все взлетело")
+42) все получилось
+![все получилось](/images/homework4/allright2.png "все получилось")
