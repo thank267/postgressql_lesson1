@@ -10,12 +10,6 @@ services:
       PGDATA: /data/postgres
       TZ: "Europe/Moscow"
       PGTZ: "Europe/Moscow"
-    deploy:
-      resources:
-        limits:
-          memory: 4G
-        reservations:
-          memory: 4G
     volumes:
        - otus_db_data:/data/postgres
 
