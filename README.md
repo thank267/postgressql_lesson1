@@ -1,203 +1,171 @@
-# Настройка autovacuum с учетом особеностей производительности
+# Работа с журналами
 
-1) Для установки использовал docker-compose файл:
-   [docker-compose файл](/docker_compose_files/postgresql-otus-docker-compose.yml)
+1) Для установки использовал docker-compose файл, в котором установлены параметры checkpoint_timeout=30s и wal_keep_size=1024:
+   [docker-compose файл](/docker_compose_files/postgresql-otus-data_checksums-off-docker-compose.yml)
 
-2) Число процессоров изменить нельзя. Установил резервы по памяти 4Gb, диск внешний, поэтому лимитировал размером свободного диска на ноутбуке
-3) Создаю тестовую бд
+2) Смотрим до нагрузки Latest checkpoint location и в каком файле находится:
 ```
-pgbench -i postgres -U postgres
+select pg_current_wal_lsn();
+select pg_walfile_name(pg_current_wal_lsn()); 
+ pg_current_wal_lsn 
+--------------------
+ 0/2198660
+(1 row)
+pg_walfile_name      
+--------------------------
+ 000000010000000000000002
+(1 row)
+
 ```
-3) Запускаю тест
+3) Даем нагрузку
 ```
-pgbench -c8 -P 6 -T 60 -U postgres postgres;
+pgbench -c8 -P 6 -T 600
+
+tps = 83.817475 (without initial connection time)
 ```
-4) Получаю результат
+3) Смотрим после нагрузки Latest checkpoint location и в каком файле находится:
 ```
+select pg_current_wal_lsn();
+select pg_walfile_name(pg_current_wal_lsn());
+pg_current_wal_lsn 
+--------------------
+ 0/F654160
+(1 row)
+pg_walfile_name      
+--------------------------
+ 00000001000000000000000F
+(1 row)
+```
+4) Сгенерировано 16 файлов общим размером 224Mb, размер wal файла 16 384KB:
+![wal files](/images/homework6/wal_files.png "wal files")
+
+5) Смотрим статистику контрольных точек:
+```
+grep -rn '/data/postgres/pg_log/postgresql.log' -e "checkpoint starting: time"
+
+63922:2024-05-12 11:19:47.576 MSK [28] LOG:  checkpoint starting: time
+110876:2024-05-12 11:20:17.381 MSK [28] LOG:  checkpoint starting: time
+131295:2024-05-12 11:20:47.374 MSK [28] LOG:  checkpoint starting: time
+150874:2024-05-12 11:21:17.712 MSK [28] LOG:  checkpoint starting: time
+168599:2024-05-12 11:21:47.446 MSK [28] LOG:  checkpoint starting: time
+184711:2024-05-12 11:22:17.396 MSK [28] LOG:  checkpoint starting: time
+200347:2024-05-12 11:22:47.562 MSK [28] LOG:  checkpoint starting: time
+214844:2024-05-12 11:23:17.336 MSK [28] LOG:  checkpoint starting: time
+228666:2024-05-12 11:23:47.293 MSK [28] LOG:  checkpoint starting: time
+242215:2024-05-12 11:24:17.562 MSK [28] LOG:  checkpoint starting: time
+254504:2024-05-12 11:24:47.362 MSK [28] LOG:  checkpoint starting: time
+266790:2024-05-12 11:25:17.800 MSK [28] LOG:  checkpoint starting: time
+278310:2024-05-12 11:25:47.239 MSK [28] LOG:  checkpoint starting: time
+289507:2024-05-12 11:26:17.417 MSK [28] LOG:  checkpoint starting: time
+300282:2024-05-12 11:26:47.316 MSK [28] LOG:  checkpoint starting: time
+310949:2024-05-12 11:27:17.304 MSK [28] LOG:  checkpoint starting: time
+321138:2024-05-12 11:27:47.482 MSK [28] LOG:  checkpoint starting: time
+331263:2024-05-12 11:28:17.422 MSK [28] LOG:  checkpoint starting: time
+341336:2024-05-12 11:28:47.928 MSK [28] LOG:  checkpoint starting: time
+350589:2024-05-12 11:29:17.400 MSK [28] LOG:  checkpoint starting: time
+```
+В целом все контрольные точки выполнились по расписанию. Мне кажется вполне закономерно, 
+т.к. не вылезли за параметр max_wal_size=1Gb размера журнала
+
+6) Даем нагрузку в синхронном режиме:
+```
+pgbench -P 1 -T 10
+
 pgbench (15.6 (Debian 15.6-1.pgdg120+2))
 starting vacuum...end.
-progress: 6.0 s, 548.0 tps, lat 14.485 ms stddev 12.029, 0 failed
-progress: 12.0 s, 539.7 tps, lat 14.811 ms stddev 11.589, 0 failed
-progress: 18.0 s, 542.3 tps, lat 14.748 ms stddev 11.978, 0 failed
-progress: 24.0 s, 609.3 tps, lat 13.123 ms stddev 10.699, 0 failed
-progress: 30.0 s, 590.2 tps, lat 13.542 ms stddev 11.419, 0 failed
-progress: 36.0 s, 591.3 tps, lat 13.515 ms stddev 11.603, 0 failed
-progress: 42.0 s, 612.7 tps, lat 13.036 ms stddev 10.623, 0 failed
-progress: 48.0 s, 621.8 tps, lat 12.854 ms stddev 10.211, 0 failed
-progress: 54.0 s, 624.8 tps, lat 12.792 ms stddev 10.825, 0 failed
-progress: 60.0 s, 608.8 tps, lat 13.108 ms stddev 10.565, 0 failed
+progress: 1.0 s, 119.0 tps, lat 6.754 ms stddev 20.867, 0 failed
+progress: 2.0 s, 41.0 tps, lat 27.396 ms stddev 64.091, 0 failed
+progress: 3.0 s, 49.0 tps, lat 19.954 ms stddev 56.162, 0 failed
+progress: 4.0 s, 40.0 tps, lat 22.417 ms stddev 56.360, 0 failed
+progress: 5.0 s, 40.0 tps, lat 23.055 ms stddev 58.873, 0 failed
+progress: 6.0 s, 50.0 tps, lat 22.773 ms stddev 59.245, 0 failed
+progress: 7.0 s, 40.0 tps, lat 26.649 ms stddev 69.073, 0 failed
+progress: 8.0 s, 35.0 tps, lat 25.974 ms stddev 71.948, 0 failed
+progress: 9.0 s, 30.0 tps, lat 30.283 ms stddev 77.191, 0 failed
+progress: 10.0 s, 40.0 tps, lat 26.576 ms stddev 65.627, 0 failed
 transaction type: <builtin: TPC-B (sort of)>
 scaling factor: 1
 query mode: simple
-number of clients: 8
+number of clients: 1
 number of threads: 1
 maximum number of tries: 1
-duration: 60 s
-number of transactions actually processed: 35342
+duration: 10 s
+number of transactions actually processed: 485
 number of failed transactions: 0 (0.000%)
-latency average = 13.563 ms
-latency stddev = 11.168 ms
-initial connection time = 23.770 ms
-tps = 589.130461 (without initial connection time)
+latency average = 20.716 ms
+latency stddev = 57.769 ms
+initial connection time = 70.585 ms
+tps = 48.268509 (without initial connection time)
 ```
-5) Меняю настройки бд в файле postgresql.conf. По-моему, они не относятся к вакууму/автовакууму:)
+
+Включаем асинхронный режим и даем нагрузку
 ```
-max_connections = 40
-shared_buffers = 1GB
-effective_cache_size = 3GB
-maintenance_work_mem = 512MB
-checkpoint_completion_target = 0.9
-wal_buffers = 16MB
-default_statistics_target = 500
-random_page_cost = 4
-effective_io_concurrency = 2
-work_mem = 6553kB
-min_wal_size = 4GB
-max_wal_size = 16GB
-```
-6) Запускаю тест
-```
-pgbench -c8 -P 6 -T 60 -U postgres postgres;
-```
-7) И не понимаю закономерности
-```
+ALTER SYSTEM SET synchronous_commit = off;
+SELECT pg_reload_conf();
+pgbench -P 1 -T 10
+
 pgbench (15.6 (Debian 15.6-1.pgdg120+2))
 starting vacuum...end.
-progress: 6.0 s, 540.3 tps, lat 14.711 ms stddev 11.939, 0 failed
-progress: 12.0 s, 610.7 tps, lat 13.091 ms stddev 10.471, 0 failed
-progress: 18.0 s, 611.7 tps, lat 13.062 ms stddev 10.498, 0 failed
-progress: 24.0 s, 607.2 tps, lat 13.129 ms stddev 10.541, 0 failed
-progress: 30.0 s, 609.8 tps, lat 13.127 ms stddev 10.560, 0 failed
-progress: 36.0 s, 611.3 tps, lat 13.065 ms stddev 9.749, 0 failed
-progress: 42.0 s, 603.3 tps, lat 13.245 ms stddev 10.487, 0 failed
-progress: 48.0 s, 571.7 tps, lat 13.990 ms stddev 11.182, 0 failed
-progress: 54.0 s, 537.3 tps, lat 14.882 ms stddev 11.516, 0 failed
-progress: 60.0 s, 525.7 tps, lat 15.179 ms stddev 11.733, 0 failed
+progress: 1.0 s, 119.0 tps, lat 6.452 ms stddev 30.812, 0 failed
+progress: 2.0 s, 50.0 tps, lat 22.918 ms stddev 64.389, 0 failed
+progress: 3.0 s, 40.0 tps, lat 23.312 ms stddev 64.984, 0 failed
+progress: 4.0 s, 40.0 tps, lat 23.920 ms stddev 66.845, 0 failed
+progress: 5.0 s, 40.0 tps, lat 23.362 ms stddev 66.203, 0 failed
+progress: 6.0 s, 50.0 tps, lat 23.568 ms stddev 66.716, 0 failed
+progress: 7.0 s, 45.0 tps, lat 20.628 ms stddev 60.165, 0 failed
+progress: 8.0 s, 40.0 tps, lat 22.626 ms stddev 63.747, 0 failed
+progress: 9.0 s, 40.0 tps, lat 23.420 ms stddev 66.417, 0 failed
+progress: 10.0 s, 50.0 tps, lat 23.469 ms stddev 65.915, 0 failed
 transaction type: <builtin: TPC-B (sort of)>
 scaling factor: 1
 query mode: simple
-number of clients: 8
+number of clients: 1
 number of threads: 1
 maximum number of tries: 1
-duration: 60 s
-number of transactions actually processed: 34982
+duration: 10 s
+number of transactions actually processed: 515
 number of failed transactions: 0 (0.000%)
-latency average = 13.704 ms
-latency stddev = 10.885 ms
-initial connection time = 23.265 ms
-tps = 583.021245 (without initial connection time)
+latency average = 19.587 ms
+latency stddev = 59.997 ms
+initial connection time = 83.163 ms
+tps = 51.053162 (without initial connection time)
 ```
-8) Создаю таблицу с текстовым полем
+
+Скорость в асинхронном режиме увеличилась? т.к. не ждем положительного ответа о транзакции
+
+7) Создаем инстанс postgresql с включенной контрольной суммой страниц docker-compose файл:
+   [docker-compose файл](/docker_compose_files/postgresql-otus-data_checksums-on-docker-compose.yml)
+
+8) Создаем таблицу, вставляем данные и искажаем их:
 ```
-CREATE TABLE student(fio char(100));
-```
-9) Заполняю таблицу
-```
-INSERT INTO student(fio) SELECT 'noname' FROM generate_series(1,1000000);
-```
-10) Проверяем размер
-```
-SELECT pg_size_pretty(pg_total_relation_size('student'));
-pg_size_pretty 
-----------------
- 128 MB
-(1 row)
-```
-11) Обновляю 5 раз строчки таблицы
-```
-DO
-$$
-declare
-i int;
-repeat_times int;
-begin
-select 5 INTO repeat_times;
-for i in select generate_series(1,repeat_times)
-loop
-        update student set fio = fio||i;
-end loop;
-end;
-$$;
-```
-12) Смотрим количество мертвых строчек в таблице и когда последний раз происходил автовакуум
-```
-SELECT relname, n_live_tup, n_dead_tup, last_autovacuum
-FROM pg_stat_user_tables WHERE relname = 'student'; 
- 
- relname | n_live_tup | n_dead_tup |        last_autovacuum        
----------+------------+------------+-------------------------------
- student |    1000000 |    5000000 | 2024-05-04 23:13:18.443439+03
-(1 row)
-```
-13) Видим что 5 000 000 (5 x 1 000 000). Ждем и повторяем. Видим что автовакуум отработал
-```
-SELECT relname, n_live_tup, n_dead_tup, last_autovacuum
-FROM pg_stat_user_tables WHERE relname = 'student'; 
- relname | n_live_tup | n_dead_tup |        last_autovacuum        
----------+------------+------------+-------------------------------
- student |    1003561 |          0 | 2024-05-04 23:18:30.779704+03
-(1 row)
-```
-14) Снова обновляю 5 раз строчки таблицы
-```
-DO
-$$
-declare
-i int;
-repeat_times int;
-begin
-select 5 INTO repeat_times;
-for i in select generate_series(1,repeat_times)
-loop
-        update student set fio = fio||i;
-end loop;
-end;
-$$;
-```
-15) Смотрю ее физический размер. Размер вырос из-за мертвых кортежей и общего роста размера поля fio
-```
-SELECT pg_size_pretty(pg_total_relation_size('student'));
- pg_size_pretty 
-----------------
- 769 MB
-(1 row)
-```
-22) Отключаю автовакуум на таблице student
-```
-ALTER TABLE student SET (autovacuum_enabled = off);
-```
-23) Обновляю ее 10 раз
-```
-DO
-$$
-declare
-i int;
-repeat_times int;
-begin
-select 10 INTO repeat_times;
-for i in select generate_series(1,repeat_times)
-loop
-        update student set fio = fio||i;
-end loop;
-end;
-$$;
-```
-24) Смотрю ее физический размер. Размер вырос из-за мертвых кортежей и общего роста размера поля fio
-```
-SELECT pg_size_pretty(pg_total_relation_size('student'));
- pg_size_pretty 
-----------------
- 1409 MB
+CREATE TABLE TEST(id integer);
+INSERT INTO TEST (id) values (1), (2), (3);
+SELECT pg_relation_filepath('TEST');
+
+pg_relation_filepath 
+----------------------
+ base/5/16386
 (1 row)
 
-SELECT relname, n_live_tup, n_dead_tup, last_autovacuum
-FROM pg_stat_user_tables WHERE relname = 'student';
- relname | n_live_tup | n_dead_tup |        last_autovacuum        
----------+------------+------------+-------------------------------
- student |    1010462 |   10000000 | 2024-05-04 23:26:34.875695+03
-(1 row)
+dd if=/dev/zero of=/data/postgres/base/5/16386 oflag=dsync conv=notrunc bs=1 count=8
 ```
-25) Восстанавливаем автовакуум
+При селекте получаем ошибку (нарушение контрольной суммы)
 ```
-ALTER TABLE student SET (autovacuum_enabled = on);
+select * from TEST;
+WARNING:  page verification failed, calculated checksum 52381 but expected 23564
+ERROR:  invalid page in block 0 of relation base/5/16386
+```
+
+Игнорируем ее:
+```
+SET ignore_checksum_failure = on;
+select * from TEST;
+
+WARNING:  page verification failed, calculated checksum 52381 but expected 23564
+ id 
+----
+  1
+  2
+  3
+(3 rows)
 ```
