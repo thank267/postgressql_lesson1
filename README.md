@@ -1,179 +1,94 @@
-# Механизм блокировок
+# Нагрузочное тестирование и тюнинг PostgreSQL
 
-1) Для установки использовал docker-compose файл, в котором установлены параметры log_lock_waits=on и deadlock_timeout=200ms:
-   [docker-compose файл](/docker_compose_files/postgresql-otus-data_checksums-off-docker-compose.yml)
-
-2) Для моделирования будем использовать таблицу category из DVD Rental database:
+1) Устанавливаем дистрибутив Postgresql 15.7 на ноутбук с Windows 10. Смотрим дефолтную производительность
 ```
-сессия 1
-BEGIN;
-UPDATE category SET name = 'Action 1' WHERE category_id = 1;
+иницилизируем pgbench
+c:\Program Files\PostgreSQL\15\bin>pgbench -i -U postgres postgres
 
-сессия 2 
-BEGIN;
-UPDATE category SET name = 'Action 1' WHERE category_id = 1;
+
+даем нагрузку
+pgbench -c 50 -j 2 -P 10 -T 60 -U postgres postgres
+pgbench (15.7)
+starting vacuum...end.
+progress: 10.0 s, 322.8 tps, lat 108.075 ms stddev 420.158, 0 failed
+progress: 20.0 s, 1781.5 tps, lat 28.389 ms stddev 38.009, 0 failed
+progress: 30.0 s, 948.8 tps, lat 43.848 ms stddev 149.358, 0 failed
+progress: 40.0 s, 1376.8 tps, lat 42.407 ms stddev 191.050, 0 failed
+progress: 50.0 s, 1775.9 tps, lat 28.149 ms stddev 34.976, 0 failed
+progress: 60.0 s, 874.1 tps, lat 57.171 ms stddev 266.812, 0 failed
+transaction type: <builtin: TPC-B (sort of)>
+scaling factor: 1
+query mode: simple
+number of clients: 50
+number of threads: 2
+maximum number of tries: 1
+duration: 60 s
+number of transactions actually processed: 70863
+number of failed transactions: 0 (0.000%)
+latency average = 40.334 ms
+latency stddev = 167.007 ms
+initial connection time = 2878.450 ms
+tps = 1238.732097 (without initial connection time)
 ```
-Во второй сессии GUI подвесилось
-   ![Блокировка](/images/homework7/case_1.png "Блокировка")
+3) настроить кластер PostgreSQL 15 на максимальную производительность не обращая внимание на возможные проблемы с надежностью в случае аварийной перезагрузки виртуальной машины
+4) нагрузить кластер через утилиту через утилиту pgbench
+5) написать какого значения tps удалось достичь, показать какие параметры в какие значения устанавливали и почему
 
-Коммитим обе сессии и смотрим логи:
+используем pgtune
 ```
-tail -n 12 /data/postgres/pg_log/postgresql.log
+# DB Version: 15
+# OS Type: windows
+# DB Type: web
+# Total Memory (RAM): 16 GB
+# CPUs num: 8
+# Data Storage: ssd
 
-2024-05-12 21:08:16.060 MSK [148] LOG:  statement: BEGIN;
-	UPDATE category SET name = 'Action 2' WHERE category_id = 1;
-2024-05-12 21:08:16.262 MSK [148] LOG:  process 148 still waiting for ShareLock on transaction 918 after 200.163 ms
-2024-05-12 21:08:16.262 MSK [148] DETAIL:  Process holding the lock: 145. Wait queue: 148.
-2024-05-12 21:08:16.262 MSK [148] CONTEXT:  while locking tuple (0,1) in relation "category"
-2024-05-12 21:08:16.262 MSK [148] STATEMENT:  BEGIN;
-	UPDATE category SET name = 'Action 2' WHERE category_id = 1;
-2024-05-12 21:09:29.118 MSK [145] LOG:  statement: COMMIT;
-2024-05-12 21:09:29.127 MSK [148] LOG:  process 148 acquired ShareLock on transaction 918 after 73065.023 ms
-2024-05-12 21:09:29.127 MSK [148] CONTEXT:  while locking tuple (0,1) in relation "category"
-2024-05-12 21:09:29.127 MSK [148] STATEMENT:  BEGIN;
-	UPDATE category SET name = 'Action 2' WHERE category_id = 1;
-2024-05-12 21:13:55.723 MSK [148] LOG:  statement: BEGIN;
-	UPDATE category SET name = 'Action 2' WHERE category_id = 1;
-	commit;
-2024-05-12 21:13:55.723 MSK [148] WARNING:  there is already a transaction in progress
+max_connections = 200
+shared_buffers = 4GB
+effective_cache_size = 12GB
+maintenance_work_mem = 1GB
+checkpoint_completion_target = 0.9
+wal_buffers = 16MB
+default_statistics_target = 100
+random_page_cost = 1.1
+work_mem = 5242kB
+huge_pages = off
+min_wal_size = 1GB
+max_wal_size = 4GB
+max_worker_processes = 8
+max_parallel_workers_per_gather = 4
+max_parallel_workers = 8
+max_parallel_maintenance_workers = 4
 
-```
-2) Также будем использовать для моделирования трех update таблицу category из DVD Rental database (case 2)
-```
-сессия 1
-BEGIN;
-SELECT txid_current(), pg_backend_pid();
- txid_current | pg_backend_pid 
---------------+----------------
-          940 |             94
-(1 row)
-UPDATE category SET name = name||1 WHERE category_id = 1;
-
-SELECT locktype, relation::REGCLASS, virtualxid AS virtxid, transactionid AS xid, mode, granted FROM pg_locks WHERE pid = 94;
-
-   locktype    |   relation    | virtxid | xid |       mode       | granted
----------------+---------------+---------+-----+------------------+---------
- relation      | category_pkey |         |     | RowExclusiveLock | t
- relation      | category      |         |     | RowExclusiveLock | t
- virtualxid    |               | 12/7    |     | ExclusiveLock    | t
- transactionid |               |         | 940 | ExclusiveLock    | t
-(4 rows)
-
-ExclusiveLock - необходимор для самой транзакции (типы virtualxid и transactionid)
-RowExclusiveLock - на то что изменяем и на pkey
-
-сессия 2 
-BEGIN;
-SELECT txid_current(), pg_backend_pid();
- txid_current | pg_backend_pid 
---------------+----------------
-          941 |             95
-(1 row)
-UPDATE category SET name = name||2 WHERE category_id = 1;
-
-SELECT locktype, relation::REGCLASS, virtualxid AS virtxid, transactionid AS xid, mode, granted FROM pg_locks WHERE pid = 95;
-
-   locktype    |   relation    | virtxid | xid |       mode       | granted
----------------+---------------+---------+-----+------------------+---------
- relation      | category_pkey |         |     | RowExclusiveLock | t
- relation      | category      |         |     | RowExclusiveLock | t
- virtualxid    |               | 13/2    |     | ExclusiveLock    | t
- tuple         | category      |         |     | ExclusiveLock    | t
- transactionid |               |         | 940 | ShareLock        | f
- transactionid |               |         | 941 | ExclusiveLock    | t
-(6 rows)
-
-ExclusiveLock - необходимор для самой транзакции (типы virtualxid и transactionid)
-ExclusiveLock - блокировка на обновляемую строку
-ShareLock - ожидает блокировки от транзакции 940 (первой)
-RowExclusiveLock - на то что изменяем и на pkey
-
-сессия 3 
-BEGIN;
-SELECT txid_current(), pg_backend_pid();
- txid_current | pg_backend_pid 
---------------+----------------
-          942|             96
-(1 row)
-UPDATE category SET name = name||3 WHERE category_id = 1;
-
-SELECT locktype, relation::REGCLASS, virtualxid AS virtxid, transactionid AS xid, mode, granted FROM pg_locks WHERE pid = 96;
-
-   locktype    |   relation    | virtxid | xid |       mode       | granted
----------------+---------------+---------+-----+------------------+---------
- relation      | category_pkey |         |     | RowExclusiveLock | t
- relation      | category      |         |     | RowExclusiveLock | t
- virtualxid    |               | 14/2    |     | ExclusiveLock    | t
- tuple         | category      |         |     | ExclusiveLock    | f
- transactionid |               |         | 942 | ExclusiveLock    | t
-(5 rows)
-
-ExclusiveLock - необходимор для самой транзакции (типы virtualxid и transactionid)
-ExclusiveLock - ожидание блокировки на обновляемую строку (false)
-RowExclusiveLock - на то что изменяем и на pkey
+от себя добавим, т.к. сохранность данных не важна
+synchronous_commit = off
 ```
 
-
-4) Воспроизведите взаимоблокировку трех транзакций (case 3)
+даем нагрузку
 ```
-сессия 1
-BEGIN;
-UPDATE category SET name = name||1 WHERE category_id = 1;
-UPDATE category SET name = name||2 WHERE category_id = 2;
-
-сессия 2
-BEGIN;
-UPDATE category SET name = name||2 WHERE category_id = 2;
-UPDATE category SET name = name||3 WHERE category_id = 3;
-
-сессия 3
-BEGIN;
-UPDATE category SET name = name||3 WHERE category_id = 3;
-UPDATE category SET name = name||1 WHERE category_id = 1;
-
-Смотрим логи tail -n 10 /data/postgres/pg_log/postgresql.log
-
-2024-05-14 20:17:01.449 MSK [51] ERROR:  deadlock detected
-2024-05-14 20:17:01.449 MSK [51] DETAIL:  Process 51 waits for ShareLock on transaction 951; blocked by process 47.
-	Process 47 waits for ShareLock on transaction 952; blocked by process 46.
-	Process 46 waits for ShareLock on transaction 953; blocked by process 51.
-	Process 51: UPDATE category SET name = name||1 WHERE category_id = 1
-	Process 47: UPDATE category SET name = name||2 WHERE category_id = 2
-	Process 46: UPDATE category SET name = name||3 WHERE category_id = 3
-2024-05-14 20:17:01.449 MSK [51] HINT:  See server log for query details.
-2024-05-14 20:17:01.449 MSK [51] CONTEXT:  while locking tuple (0,48) in relation "category"
-2024-05-14 20:17:01.449 MSK [51] STATEMENT:  UPDATE category SET name = name||1 WHERE category_id = 1
+pgbench (15.7)
+starting vacuum...end.
+progress: 10.0 s, 1715.9 tps, lat 20.800 ms stddev 26.918, 0 failed
+progress: 20.0 s, 2355.4 tps, lat 21.220 ms stddev 27.679, 0 failed
+progress: 30.0 s, 2052.2 tps, lat 24.315 ms stddev 57.252, 0 failed
+progress: 40.0 s, 2326.2 tps, lat 21.507 ms stddev 29.316, 0 failed
+progress: 50.0 s, 2222.4 tps, lat 22.453 ms stddev 34.716, 0 failed
+progress: 60.0 s, 2259.2 tps, lat 22.192 ms stddev 33.395, 0 failed
+transaction type: <builtin: TPC-B (sort of)>
+scaling factor: 1
+query mode: simple
+number of clients: 50
+number of threads: 2
+maximum number of tries: 1
+duration: 60 s
+number of transactions actually processed: 129371
+number of failed transactions: 0 (0.000%)
+latency average = 22.098 ms
+latency stddev = 36.244 ms
+initial connection time = 2842.724 ms
+tps = 2261.318513 (without initial connection time)
 ```
+Было tps = 1238.732097, стало tps = 2261.318513
 
-5) Могут ли две транзакции, выполняющие единственную команду UPDATE одной и той же таблицы (без where), заблокировать друг друга?
-```
-Да, когда идет update таблицы в разные стороны. Например 
 
-сесиия 1
-begin;
-declare a CURSOR FOR SELECT * FROM category ORDER BY category_id ASC
-FOR UPDATE;  
-fetch 9 from a;
-
-сесиия 2
-begin;
-declare d CURSOR FOR SELECT * FROM category ORDER BY category_id DESC 
-FOR UPDATE;  
-fetch 9 from d;
-
-"Столнули" транзакции, далее
-fetch 1 from d;
-И получаем:
-
-ERROR:  Process 117 waits for ShareLock on transaction 962; blocked by process 102.
-Process 102 waits for ShareLock on transaction 961; blocked by process 117.deadlock detected 
-
-ERROR:  deadlock detected
-SQL state: 40P01
-Detail: Process 117 waits for ShareLock on transaction 962; blocked by process 102.
-Process 102 waits for ShareLock on transaction 961; blocked by process 117.
-Hint: See server log for query details.
-Context: while locking tuple (0,7) in relation "category"
-
-```
 
