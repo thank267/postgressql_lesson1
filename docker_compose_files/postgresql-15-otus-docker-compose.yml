@@ -2,12 +2,11 @@ version: '3.5'
 
 services:
   postgres:
-    container_name: postgres_14_otus_container
-    image: postgres:14
+    container_name: postgres_15_otus_container
+    image: postgres:15
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
-      PGDATA: /data/postgres
       TZ: "Europe/Moscow"
       PGTZ: "Europe/Moscow"
 
@@ -16,7 +15,17 @@ services:
     networks:
       - postgres
     restart: unless-stopped
+    volumes:
+      - dvd_rental:/tmp
 
 networks:
   postgres:
     driver: bridge
+
+volumes:
+  dvd_rental:
+    driver: local
+    driver_opts:
+      type: none
+      device: //c/tmp
+      o: bind
