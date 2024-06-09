@@ -1,128 +1,96 @@
-# реализовать свой миникластер на 3 ВМ
+# Работа с индексами
 
-1) Создаем кластер на 3 ВМ, получаем ip адреса
+Устанавливаем дистрибутив Postgresql 15.7 c с помощью [docker-compose файл](/docker_compose_files/postgresql-15-otus-docker-compose.yml)
+Загружаем DVD Rental database
 ```
-docker network create pgnet
-docker run -d --name pgmaster -e POSTGRES_PASSWORD=postgres --network pgnet postgres
-docker run -d --name pgslave1 -e POSTGRES_PASSWORD=postgres --network pgnet postgres
-docker run -d --name pgslave2 -e POSTGRES_PASSWORD=postgres --network pgnet postgres
-
-docker inspect -f '{{range.NetworkSettings.Networks}}{{.IPAddress}}{{end}}' pgmaster
-'172.19.0.2'
-
-docker inspect -f '{{range.NetworkSettings.Networks}}{{.IPAddress}}{{end}}' pgslave1
-'172.19.0.3'
-
-docker inspect -f '{{range.NetworkSettings.Networks}}{{.IPAddress}}{{end}}' pgslave2
-'172.19.0.4'
-```
-2) На серверах pgmaster и pgslave1 меняем wal_level:
-```
-alter system set wal_level = logical;
-pg_ctl -D /var/lib/postgresql/data restart
-```
-3) На серверах pgmaster и pgslave1, pgslave2 создаем таблицы
-```
-CREATE TABLE test(id int, label text);
-CREATE TABLE test2(id int, title text);
-```
-3) На сервере pgmaster создаем публикацию
-```
-create publication test_pub for table test;
-```
-4) на сервере pgslave1 создаем подписку:
-```
-create subscription test_sub
-connection 'host=172.19.0.2 port=5432 user=postgres password=postgres dbname=postgres'
-publication test_pub with (copy_data = true);
-```
-5) Вставляем данные на pgmaster и смотрим на pgslave1
-```
-pgmaster
-INSERT INTO test(label) VALUES ('Раз'), ('Два'), ('Три');
-
-pgslave1
-select * from test;
- id | label 
-----+-------
-    | Раз
-    | Два
-    | Три
-(3 rows)
-
-select * from pg_stat_subscription;
-
- subid | subname  | pid | leader_pid | relid | received_lsn |      last_msg_send_time       |    last_msg_receipt_time     | latest_end_lsn |        latest_end_time        
--------+----------+-----+------------+-------+--------------+-------------------------------+------------------------------+----------------+-------------------------------
- 24583 | test_sub |  33 |            |       | 0/15697E0    | 2024-05-27 18:35:39.705146+00 | 2024-05-27 18:35:39.70525+00 | 0/15697E0      | 2024-05-27 18:35:39.705146+00
-(1 row)
+pg_restore -U postgres -d postgres /tmp/dvdrental/dvdrental.tar
 
 ```
-6) На сервере pgslave1 создаем публикацию
+1) Создать индекс к какой-либо из таблиц вашей БД
 ```
-create publication test2_pub for table test2;
-```
-7) на сервере pgmaster создаем подписку:
-```
-create subscription test2_sub
-connection 'host=172.19.0.3 port=5432 user=postgres password=postgres dbname=postgres'
-publication test2_pub with (copy_data = true);
-```
-8) Вставляем данные на pgslave1 и смотрим на pgmaster
-```
-pgslave1
-INSERT INTO test2(title) VALUES ('One'), ('Two'), ('Three');
+CREATE INDEX IF NOT EXISTS idx_actor_first_name
+    ON public.actor USING btree
+    (first_name COLLATE pg_catalog."default" ASC NULLS LAST)
+    TABLESPACE pg_default;
 
-pgmaster
-select * from test2;
- id | title 
-----+-------
-    | One
-    | Two
-    | Three
-(3 rows)
-
-select * from pg_stat_subscription;
- subid |  subname  | pid | leader_pid | relid | received_lsn |      last_msg_send_time       |     last_msg_receipt_time     | latest_end_lsn |        latest_end_time        
--------+-----------+-----+------------+-------+--------------+-------------------------------+-------------------------------+----------------+-------------------------------
- 16400 | test2_sub |  89 |            |       | 0/1567468    | 2024-05-27 18:24:43.329068+00 | 2024-05-27 18:24:43.329309+00 | 0/1567468      | 2024-05-27 18:24:43.329068+00
-(1 row)
+создали индекс для таблицы actor для поля first_name
 ```
-9) Делаем подписки на pgslave2 и проверяем данные
+2) Прислать текстом результат команды explain, в которой используется данный индекс
 ```
-create subscription test_sub
-connection 'host=172.19.0.2 port=5432 user=postgres password=postgres dbname=postgres'
-publication test_pub with (copy_data = true, slot_name = test_read);
-NOTICE:  created replication slot "test_read" on publisher
-CREATE SUBSCRIPTION
+т.к. таблица небольшая - принудительно отключим seq scan
+set enable_seqscan = off;
 
-create subscription test2_sub
-connection 'host=172.19.0.3 port=5432 user=postgres password=postgres dbname=postgres'
-publication test2_pub with (copy_data = true, slot_name = test2_read);
-NOTICE:  created replication slot "test2_read" on publisher
-CREATE SUBSCRIPTION
-
-select * from test;
- id | label 
-----+-------
-    | Раз
-    | Два
-    | Три
-(3 rows)
-
-select * from test2;
- id | title 
-----+-------
-    | One
-    | Two
-    | Three
-(3 rows)
-
-select * from pg_stat_subscription;
- subid |  subname  | pid | leader_pid | relid | received_lsn |      last_msg_send_time       |     last_msg_receipt_time     | latest_end_lsn |        latest_end_time        
--------+-----------+-----+------------+-------+--------------+-------------------------------+-------------------------------+----------------+-------------------------------
- 24587 | test_sub  |  46 |            |       | 0/15697E0    | 2024-05-27 18:34:09.594029+00 | 2024-05-27 18:34:09.594154+00 | 0/15697E0      | 2024-05-27 18:34:09.594029+00
- 24588 | test2_sub |  50 |            |       | 0/15675C0    | 2024-05-27 18:34:10.787819+00 | 2024-05-27 18:34:10.787911+00 | 0/15675C0      | 2024-05-27 18:34:10.787819+00
+explain select * from actor
+where first_name = 'Bob';
+                                    QUERY PLAN                                     
+-----------------------------------------------------------------------------------
+ Index Scan using idx_actor_first_name on actor  (cost=0.14..8.16 rows=1 width=25)
+   Index Cond: ((first_name)::text = 'Bob'::text)
 (2 rows)
 ```
 
+3) Реализовать индекс для полнотекстового поиска
+```
+поиграемся с таблицей film. Она содержит полнотектоый индекс gist film_fulltext_idx и поле fulltext типа tsvector.
+Удалим их
+DROP INDEX film_fulltext_idx;
+ALTER TABLE film DROP COLUMN fulltext;
+
+создадим новую колонку с векторами для полнотекстового поиска
+ALTER TABLE film ADD COLUMN fulltext TSVECTOR GENERATED ALWAYS
+AS (to_tsvector('english', description)) STORED;
+
+создаем индекс для полнотестового поиска
+CREATE INDEX idx_film_fulltext ON film USING gin
+(fulltext);
+
+тестируем
+EXPLAIN SELECT title, description FROM film WHERE fulltext @@
+to_tsquery('english', 'drama');
+                                    QUERY PLAN                                   
+--------------------------------------------------------------------------------
+ Bitmap Heap Scan on film  (cost=8.04..23.40 rows=5 width=109)
+   Recheck Cond: (fulltext @@ '''drama'''::tsquery)
+   ->  Bitmap Index Scan on idx_film_fulltext  (cost=0.00..8.04 rows=5 width=0)
+         Index Cond: (fulltext @@ '''drama'''::tsquery)
+(4 rows)
+```
+
+4) Реализовать индекс на часть таблицы или индекс на поле с функцией
+```
+CREATE INDEX IF NOT EXISTS idx_city_city
+ON public.city (city)
+WHERE left(city, 1) = 'A'
+
+тестируем
+set enable_seqscan = off;
+explain select * from city
+where left(city,1) ='A';
+                                QUERY PLAN                                 
+---------------------------------------------------------------------------
+ Index Scan using idx_city_city on city  (cost=0.14..8.19 rows=3 width=23)
+(1 row)
+```
+
+5) Создать индекс на несколько полей
+```
+CREATE INDEX ON address(address, address2);
+
+тестируем
+set enable_seqscan = off;
+explain select * from address
+where address is null or address2 is null
+                                            QUERY PLAN                                            
+--------------------------------------------------------------------------------------------------
+ Bitmap Heap Scan on address  (cost=33.08..40.64 rows=4 width=61)
+   Recheck Cond: ((address IS NULL) OR (address2 IS NULL))
+   ->  BitmapOr  (cost=33.08..33.08 rows=4 width=0)
+         ->  Bitmap Index Scan on address_address_address2_idx  (cost=0.00..4.28 rows=1 width=0)
+               Index Cond: (address IS NULL)
+         ->  Bitmap Index Scan on address_address_address2_idx  (cost=0.00..28.80 rows=4 width=0)
+               Index Cond: (address2 IS NULL)
+(7 rows)
+```
+
+6) Не совсем понял что надо сделать
+7) В целом не сложно. Часто включался seq scan, и планировщик не переключал на требуемый индекс, приходилось контролировать значение enable_seqscan
