@@ -1,73 +1,59 @@
 # Работа с индексами
 
 Устанавливаем дистрибутив Postgresql 15.7 c с помощью [docker-compose файл](/docker_compose_files/postgresql-15-otus-docker-compose.yml)
-Загружаем DVD Rental database
+Загружаем demo database flights
 ```
-pg_restore -U postgres -d postgres /tmp/dvdrental/dvdrental.tar
+psql -f /tmp/demo-big-en-20170815.sql -U postgres
 
 ```
-
-1) Реализовать прямое соединение двух или более таблиц
+1) Самая большая таблица tickets, будем партиционировать ее по hash по полю book_ref. Подготовим таблицу
 ```
-select city, country from city 
-inner join country using (country_id) 
+begin;
 
-Successfully run. Total query runtime: 82 msec.
-600 rows affected.
+create table tickets_temp (like tickets including all);
 
-Выводятся городв и страны в которых они находятся. связка по ключу country_id
-```
+alter table tickets_temp
+    drop constraint tickets_temp_pkey,
+    add primary key (ticket_no, book_ref);
 
-2) Реализовать левостороннее (или правостороннее)
-   соединение двух или более таблиц
-```
-select city, country from city 
-left outer join country using (country_id) 
+create table tickets_partitions (like tickets_temp including all)
+    PARTITION BY HASH (book_ref);
 
-Successfully run. Total query runtime: 84 msec.
-600 rows affected.
+drop table tickets_temp;
 
-Выводятся городв и страны в которых они находятся, также города в которых страна не указана.
-связка по ключу country_id. Одинаковое число строк в результатах запроса с 1, говорит о том, что все города приявязаны к конкретной стране.
+commit;
 ```
 
-3) Реализовать кросс соединение двух или более таблиц
+2) Создадим секции с модулем 10
 ```
-select city, country from city, country
-
-Successfully run. Total query runtime: 110 msec.
-65400 rows affected.
-
-декартово произведенее 600 x 109 = 65400. Без комментариев
-```
-
-4) Реализовать полное соединение двух или более таблиц
-```
-select city, country from city 
-full outer join country using (country_id) 
-
-Successfully run. Total query runtime: 232 msec.
-600 rows affected.
-
-Одинаковое число срок с 1-м и 2-м запросом. Нет городов без стран. Нет стран без городов
+do $$
+begin
+for i in 0 .. 9
+	loop
+		execute format('create table tickets_partitions_%s partition of tickets_partitions for values with (modulus 10, remainder %s);', i, i);
+	end loop;
+end;
+$$ language plpgsql;
 ```
 
-5) Реализовать запрос, в котором будут использованы
-   разные типы соединений
+3) Копируем данные из tickets в tickets_partitions
 ```
-select count(*) from actor
-right join (select last_name from customer 
-inner join staff using (last_name)) as ln using (last_name)
-WHERE ln.last_name IS NOT NULL
-
-
-Successfully run. Total query runtime: 78 msec.
-1 rows affected.
-
-count 
--------
-     0
-(1 row)
-
-Ищем актеров, которые не однофамильцы одновременно клиентов и сотрудников. Таких нет в дефолтных данных. 
+INSERT INTO tickets_partitions
+SELECT * FROM tickets;
 ```
+
+4) Проверяем, что чтение прошло из нужной партиции
+```
+explain analyze select * from tickets_partitions where book_ref='CB1DF3';
+                                                                      QUERY PLAN
+---------------------------------------------------------------------------------------------------------------------------------
+ Gather  (cost=1000.00..7468.22 rows=2 width=104) (actual time=0.331..24.444 rows=1 loops=1)
+   Workers Planned: 2
+   Workers Launched: 2
+   ->  Parallel Seq Scan on tickets_partitions_0 tickets_partitions  (cost=0.00..6468.02 rows=1 width=104) (actual time=10.723..1
+7.511 rows=0 loops=3)
+         Filter: (book_ref = 'CB1DF3'::bpchar)
+         Rows Removed by Filter: 98177
+ Planning Time: 0.146 ms
+ Execution Time: 24.463 ms
+``
