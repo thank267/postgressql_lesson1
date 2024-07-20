@@ -1,4 +1,4 @@
-# Работа с индексами
+# Триггеры, поддержка заполнения витрин
 
 Устанавливаем дистрибутив Postgresql 15.7 c с помощью [docker-compose файл](./docker_compose_files/postgresql-15-otus-docker-compose.yml)
 Также в docker-compose файл подключены инициализационный скрипт с начальными данными [hw_triggers.sql](./script/hw_triggers.sql) и
