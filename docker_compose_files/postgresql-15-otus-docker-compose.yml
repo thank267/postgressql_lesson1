@@ -9,23 +9,15 @@ services:
       POSTGRES_PASSWORD: postgres
       TZ: "Europe/Moscow"
       PGTZ: "Europe/Moscow"
-
     ports:
       - "5432:5432"
     networks:
       - postgres
     restart: unless-stopped
     volumes:
-      - dvd_rental:/tmp
+      - .././script/hw_triggers.sql:/docker-entrypoint-initdb.d/hw_triggers.sql
+      - .././script/my_trigger.sql:/docker-entrypoint-initdb.d/my_trigger.sql
 
 networks:
   postgres:
     driver: bridge
-
-volumes:
-  dvd_rental:
-    driver: local
-    driver_opts:
-      type: none
-      device: //c/tmp
-      o: bind
